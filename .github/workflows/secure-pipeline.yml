@@ -64,7 +64,7 @@ jobs:
           path: |
             report_html.html
             report_xml.xml
-        steps:
+        
       - name: ZAP Scan
         uses: zaproxy/action-baseline@v0.14.0
         with:
