@@ -1,0 +1,90 @@
+name: Secure Pipeline CI/CD (HTML)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # --------
+  # SAST 
+  # --------
+  sast:
+    name: SAST - Semgrep
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Gera o relatório
+      - name: Semgrep scan (relatório)
+        run: semgrep scan --config auto --json --output semgrep-report.json || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-report
+          path: semgrep-report.json
+
+      # VALIDAÇÃO: 
+      - name: Semgrep gate (validação)
+        run: semgrep scan --config auto --severity ERROR --error
+
+  # ------
+  # DAST 
+  # --------
+  dast:
+    name: DAST - OWASP ZAP
+    runs-on: ubuntu-latest
+    needs: sast
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Subir aplicação (servidor HTML)
+        run: |
+          # cd public
+          python3 -m http.server 8080 &
+          for i in $(seq 1 30); do
+            curl -s http://localhost:8080 > /dev/null && break
+            sleep 2
+          done
+
+      - name: ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: "http://localhost:8080"
+          cmd_options: "-x report_xml.xml"
+          fail_action: true                 # VALIDAÇÃO
+          allow_issue_writing: false
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-report
+          path: |
+            report_html.html
+            report_xml.xml
+
+  defectdojo:
+    name: Vulnerability Management - DefectDojo
+    runs-on: ubuntu-latest
+    needs: [sast, dast]
+    if: always()
+    steps:
+      - uses: actions/download-artifact@v4
+
+      - name: Enviar Semgrep
+        run: |
+          curl -s -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DEFECTDOJO_TOKEN }}" \
+            -F "scan_type=Semgrep JSON Report" \
+            -F "engagement=${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}" \
+            -F "file=@semgrep-report/semgrep-report.json"
+
+      - name: Enviar ZAP
+        run: |
+          curl -s -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DEFECTDOJO_TOKEN }}" \
+            -F "scan_type=ZAP Scan" \
+            -F "engagement=${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}" \
+            -F "file=@zap-report/report_xml.xml"
