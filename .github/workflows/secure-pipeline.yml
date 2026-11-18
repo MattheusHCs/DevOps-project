@@ -6,9 +6,9 @@ on:
   pull_request:
 
 jobs:
-  # --------
-  # SAST 
-  # --------
+  # ---------------------------------------------------------------
+  # SAST - Semgrep (analisa o código-fonte HTML/JS)
+  # ---------------------------------------------------------------
   sast:
     name: SAST - Semgrep
     runs-on: ubuntu-latest
@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # parte da geração do relatório
+      # Gera o relatório (não falha, para podermos enviar ao DefectDojo)
       - name: Semgrep scan (relatório)
         run: semgrep scan --config auto --json --output semgrep-report.json || true
 
@@ -26,13 +26,13 @@ jobs:
           name: semgrep-report
           path: semgrep-report.json
 
-      # VALIDAÇÃO: 
+      # VALIDAÇÃO: falha o pipeline se houver findings de severidade ERROR
       - name: Semgrep gate (validação)
         run: semgrep scan --config auto --severity ERROR --error
 
-  # ------
-  # DAST 
-  # --------
+  # ---------------------------------------------------------------
+  # DAST - OWASP ZAP (ataca o site em execução)
+  # ---------------------------------------------------------------
   dast:
     name: DAST - OWASP ZAP
     runs-on: ubuntu-latest
@@ -40,6 +40,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Site HTML estático: servidor simples do Python na porta 8080
+      # Se o index.html estiver em uma pasta (ex: public, src, docs),
+      # descomente a linha "cd" e coloque o nome da pasta.
       - name: Subir aplicação (servidor HTML)
         run: |
           # cd public
@@ -50,11 +53,11 @@ jobs:
           done
 
       - name: ZAP Baseline Scan
-        uses: zaproxy/action-baseline@v0.12.0
+        uses: zaproxy/action-baseline@v0.15.0
         with:
           target: "http://localhost:8080"
           cmd_options: "-x report_xml.xml"
-          fail_action: true                 # VALIDAÇÃO
+          fail_action: true                 # VALIDAÇÃO: falha se houver alertas
           allow_issue_writing: false
 
       - uses: actions/upload-artifact@v4
@@ -64,20 +67,32 @@ jobs:
           path: |
             report_html.html
             report_xml.xml
-        
-      - name: ZAP Scan
-        uses: zaproxy/action-baseline@v0.14.0
-        with:
-          target: 'https://seu-site.com'
-          upload_artifact: false
 
-      - name: Upload ZAP Report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: zap_scan
-          path: report_html.html
+  # -----------
+  # Envia os relatórios ao DefectDojo
+  # -----------
+  defectdojo:
+    name: Vulnerability Management - DefectDojo
+    runs-on: ubuntu-latest
+    needs: [sast, dast]
+    if: always()
+    steps:
+      - uses: actions/download-artifact@v4
 
+      - name: Enviar Semgrep
+        run: |
+          curl -s -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DEFECTDOJO_TOKEN }}" \
+            -F "scan_type=Semgrep JSON Report" \
+            -F "engagement=${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}" \
+            -F "file=@semgrep-report/semgrep-report.json"
 
+      - name: Enviar ZAP
+        run: |
+          curl -s -X POST "${{ secrets.DEFECTDOJO_URL }}/api/v2/import-scan/" \
+            -H "Authorization: Token ${{ secrets.DEFECTDOJO_TOKEN }}" \
+            -F "scan_type=ZAP Scan" \
+            -F "engagement=${{ secrets.DEFECTDOJO_ENGAGEMENT_ID }}" \
+            -F "file=@zap-report/report_xml.xml"
   
 
